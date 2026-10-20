@@ -15,6 +15,10 @@ View your app in AI Studio: https://ai.studio/apps/drive/1PC8ZUyPhhxB6Nz8DW3BOgt
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Copy [.env.example](.env.example) to `.env.local`, then set `LOCAL_MODELS` to a model already installed in your local Ollama-compatible server. The default configuration sends prompts only to that local endpoint. Keep `AI_PROVIDER=local` for closed-system operation.
 3. Run the app:
    `npm run dev`
+
+The assistant routes conversations to modular intake, research, service, and general agents based on the current page. Hosted free models are optional: set `AI_PROVIDER=openrouter` and `OPENROUTER_API_KEY` only after approving that prompts may leave the local system. The agent status indicator shows whether the selected provider is configured. Free model availability and rate limits can change.
+
+The agent API currently runs as Vite server middleware for local development and preview; it is not a production backend. Production deployment needs a separately hosted, authenticated server adapter before enabling public access.

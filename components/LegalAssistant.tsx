@@ -1,34 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { GoogleGenAI, Type, FunctionDeclaration } from "@google/genai";
+import { useLocation } from 'react-router-dom';
+import { resolveAgent } from '../ai/agents';
 import { FluxGate, MetatronGrid, HermeticSeal, SacredTriangle } from './EsotericIcons';
-
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-const displayFormDeclaration: FunctionDeclaration = {
-  name: 'displayForm',
-  parameters: {
-    type: Type.OBJECT,
-    description: 'Trigger a legal instrument/form in the tactical sidecar for the user to complete.',
-    properties: {
-      formType: { 
-          type: Type.STRING, 
-          enum: ["PMA_APPLICATION", "TRUST_DEED", "AFFIDAVIT_OF_TRUTH"],
-          description: "The specific tactical instrument to initialize."
-      },
-      prefillData: { 
-          type: Type.OBJECT,
-          description: "Initial data extracted from context to pre-populate the form."
-      }
-    },
-    required: ['formType'],
-  },
-};
-
-const SYSTEM_INSTRUCTION = `
-You are the PRIVATO LEXICON. You are an elite AI Architect.
-VOICE: Strategic, technical, non-conversational.
-MISSION: Assist in navigating Private Civilization structures.
-`;
 
 const VoiceWaveform: React.FC<{ isActive: boolean }> = ({ isActive }) => (
     <div className="flex items-center justify-center gap-[2px] h-6 w-12">
@@ -50,17 +23,38 @@ const VoiceWaveform: React.FC<{ isActive: boolean }> = ({ isActive }) => (
 );
 
 const LegalAssistant: React.FC = () => {
+    const { pathname } = useLocation();
+    const activeAgent = resolveAgent(pathname);
     const [isOpen, setIsOpen] = useState(false);
     const [input, setInput] = useState('');
     const [messages, setMessages] = useState<{ role: 'user' | 'lexicon' | 'tool', text: string }[]>([]);
     const [isTyping, setIsTyping] = useState(false);
     const [activeTool, setActiveTool] = useState<{ type: 'FORM', data: any } | null>(null);
+    const [connectionStatus, setConnectionStatus] = useState<'checking' | 'ready' | 'missing' | 'offline'>('checking');
     const [position, setPosition] = useState({ x: 40, y: 100 }); 
     const [isDragging, setIsDragging] = useState(false);
     const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
 
     const scrollRef = useRef<HTMLDivElement>(null);
     const terminalRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        setMessages([]);
+        setActiveTool(null);
+    }, [activeAgent.id]);
+
+    useEffect(() => {
+        let mounted = true;
+        fetch('/api/health')
+            .then(response => response.json())
+            .then(status => {
+                if (mounted) setConnectionStatus(status.configured ? 'ready' : 'missing');
+            })
+            .catch(() => {
+                if (mounted) setConnectionStatus('offline');
+            });
+        return () => { mounted = false; };
+    }, []);
 
     const broadcastToTerminal = (msg: string, level: 'INFO' | 'WARN' | 'CRIT' | 'SYNC' = 'INFO') => {
         window.dispatchEvent(new CustomEvent('sys-log', { detail: { message: msg, origin: 'NEURAL', level } }));
@@ -76,33 +70,35 @@ const LegalAssistant: React.FC = () => {
         setInput('');
         setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
         setIsTyping(true);
-        broadcastToTerminal("HANDSHAKE_INITIATED...", "SYNC");
+        broadcastToTerminal(`${activeAgent.label}_HANDSHAKE_INITIATED...`, "SYNC");
 
         try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-pro-preview',
-                contents: userMsg,
-                config: {
-                    systemInstruction: SYSTEM_INSTRUCTION,
-                    tools: [{ functionDeclarations: [displayFormDeclaration] }],
-                }
+            const response = await fetch('/api/agents/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    agentId: activeAgent.id,
+                    messages: [
+                        ...messages
+                            .filter(message => message.role === 'user' || message.role === 'lexicon')
+                            .map(message => ({ role: message.role === 'user' ? 'user' : 'assistant', content: message.text })),
+                        { role: 'user', content: userMsg },
+                    ],
+                }),
             });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Agent request failed.');
 
-            if (response.functionCalls) {
-                for (const fc of response.functionCalls) {
-                    if (fc.name === 'displayForm') {
-                        setActiveTool({ type: 'FORM', data: fc.args });
-                        setMessages(prev => [...prev, { role: 'tool', text: `PROTOCOL_INIT: ${fc.args.formType}` }]);
-                        broadcastToTerminal(`FORM_TRIGGER: ${fc.args.formType}`, "WARN");
-                    }
-                }
+            if (result.form) {
+                setActiveTool({ type: 'FORM', data: result.form });
+                setMessages(prev => [...prev, { role: 'tool', text: `PROTOCOL_INIT: ${result.form.formType}` }]);
+                broadcastToTerminal(`FORM_TRIGGER: ${result.form.formType}`, "WARN");
             }
-            if (response.text) {
-                setMessages(prev => [...prev, { role: 'lexicon', text: response.text }]);
-                broadcastToTerminal("DATA_PACKET_RECEIVED", "INFO");
-            }
-        } catch (e) {
-            setMessages(prev => [...prev, { role: 'lexicon', text: "[ERROR] Uplink compromised." }]);
+            setMessages(prev => [...prev, { role: 'lexicon', text: result.text || 'No response was returned.' }]);
+            broadcastToTerminal(`${result.model} :: DATA_PACKET_RECEIVED`, "INFO");
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Agent request failed.';
+            setMessages(prev => [...prev, { role: 'lexicon', text: `[ERROR] ${message}` }]);
             broadcastToTerminal("UPLINK_FAILURE", "CRIT");
         } finally {
             setIsTyping(false);
@@ -154,8 +150,12 @@ const LegalAssistant: React.FC = () => {
                             <h2 className="font-heading text-2xl text-white tracking-[0.4em] uppercase">LEXICON</h2>
                         </div>
                         <div className="flex items-center gap-2">
+                            <span className="font-mono text-[8px] text-zinc-500 tracking-widest">{activeAgent.label}</span>
                             <VoiceWaveform isActive={isTyping} />
-                            <div className="w-2.5 h-2.5 rounded-full bg-green-500 shadow-[0_0_15px_green]"></div>
+                            <div
+                                title={connectionStatus === 'ready' ? 'OpenRouter connected' : connectionStatus === 'missing' ? 'OpenRouter API key not configured' : connectionStatus === 'offline' ? 'Agent backend unavailable' : 'Checking agent backend'}
+                                className={`w-2.5 h-2.5 rounded-full ${connectionStatus === 'ready' ? 'bg-green-500 shadow-[0_0_15px_green]' : connectionStatus === 'missing' ? 'bg-amber-500' : 'bg-red-500'}`}
+                            />
                         </div>
                     </div>
                     <div ref={scrollRef} className="flex-grow overflow-y-auto p-8 space-y-8 no-scrollbar bg-black/40">
